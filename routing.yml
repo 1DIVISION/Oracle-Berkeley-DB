@@ -1,0 +1,34 @@
+---
+- name: Настройка RedOS в качестве маршрутизатора
+  hosts: localhost
+  remote_user: root
+  become: false
+  tasks:
+    - name: Установка iptables
+      dnf:
+        name: iptables
+        state: present
+
+    - name: Включение IP-переадресации
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: 1
+        state: present
+        reload: yes
+
+    - name: Применение настроек sysctl
+      command: sysctl -p
+
+    - name: Настройка NAT для сети Alt Linux
+      become: false
+      ansible.builtin.command: >
+        iptables -t nat -A POSTROUTING -s 172.20.6.0/28 -j MASQUERADE -o enp0s3
+
+    - name: Настройка NAT для сети Astra Linux
+      become: false
+      ansible.builtin.command: >
+        iptables -t nat -A POSTROUTING -s 172.20.7.0/28 -j MASQUERADE -o enp0s3
+
+    - name: Сохранение правил iptables
+      become: false
+      ansible.builtin.shell: iptables-save > /etc/iptables.rules

@@ -1,0 +1,16 @@
+---
+- hosts: localhost
+  become: true
+  tasks:
+    - name: Установка sysstat
+      yum:
+        name: sysstat
+        state: latest
+
+    - name: Получение информации о CPU
+      command: iostat -c
+      register: CPU
+
+    - name: Вывод информации о процессоре
+      debug:
+        msg: "{{ CPU.stdout }}"

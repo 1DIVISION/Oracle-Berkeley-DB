@@ -1,57 +1,107 @@
 ---
-- name: Установка Berkeley DB
+- name: Установка зависимостей и запуск BerkeleyDB
   hosts: localhost
   become: yes
-  vars:
-    версия_berkeley_db: "18.1.40"
-    директория_установки: "/usr/local/BerkeleyDB.18.1"
-    файл_бд: "/tmp/test_db.db"
 
   tasks:
-    - name: Скачать архив
-      get_url:
-        url: "https://download.oracle.com/berkeley-db/db-{{ версия_berkeley_db }}.tar.gz"
-        dest: "/tmp/db.tar.gz"
+    - name: Обновление кеша apt
+      apt:
+        update_cache: yes
 
-    - name: Распаковать архив
-      unarchive:
-        src: "/tmp/db.tar.gz"
-        dest: "/tmp"
-        remote_src: yes
+    - name: Установка системных зависимостей
+      apt:
+        name:
+          - python3-dev
+          - libdb-dev
+          - python3-pip
+          - build-essential
+        state: present
 
-    - name: Собрать и установить Berkeley DB
-      shell: |
-        cd /tmp/db-{{ версия_berkeley_db }}/build_unix &&
-        ../dist/configure --prefix={{ директория_установки }} --disable-docs &&
-        make -j$(nproc) &&
-        make install || [ $? -eq 2 ]
-      args:
-        executable: /bin/bash
+    - name: Установка Python-зависимостей
+      block:
+        - name: Установка bsddb3
+          pip:
+            name: bsddb3
+            executable: pip3
 
-    - name: Удалить временные файлы
+        - name: Установка Flask
+          pip:
+            name: flask
+            executable: pip3
+
+    - name: Подготовка рабочей директории
       file:
-        path: "{{ item }}"
-        state: absent
+        path: /opt/berkeley_api
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Развертывание приложения
+      copy:
+        src: "{{ item }}"
+        dest: "/opt/berkeley_api/{{ item }}"
+        owner: root
+        group: root
+        mode: '0644'
       loop:
-        - "/tmp/db.tar.gz"
-        - "/tmp/db-{{ версия_berkeley_db }}"
+        - app.py
+        - db_wrapper.py
+
+    - name: Конфигурация systemd сервиса
+      copy:
+        dest: /etc/systemd/system/berkeleyapi.service
+        content: |
+          [Unit]
+          Description=Berkeley DB REST API
+          After=network.target
+          Requires=network.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/bin/python3 /opt/berkeley_api/app.py
+          WorkingDirectory=/opt/berkeley_api
+          Restart=always
+          RestartSec=5
+          User=root
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Обновление конфигурации systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: Запуск сервиса
+      systemd:
+        name: berkeleyapi
+        enabled: yes
+        state: restarted
+
+    - name: Проверка работоспособности API
+      uri:
+        url: http://localhost:8080/all
+        method: GET
+        status_code: 200
+        timeout: 10
+      register: api_check
+      retries: 5
+      delay: 5
+      until: api_check.status == 200
       ignore_errors: yes
 
-    - name: Настроить путь к библиотекам
-      copy:
-        dest: "/etc/ld.so.conf.d/bdb.conf"
-        content: "{{ директория_установки }}/lib\n"
-
-    - name: Обновить кэш библиотек
-      command: ldconfig
-
-    - name: Добавить тестовые данные в БД
-      shell: |
-        echo -e "key1=value1\nkey2=value2\ntest_key=test_value" |
-        {{ директория_установки }}/bin/db_load -T -t hash {{ файл_бд }}
-      args:
-        executable: /bin/bash
-
-    - name: Проверка создания БД
-      debug:
-        msg: "Тестовая база данных создана в {{ файл_бд }} с 3 записями"
+    - name: Инициализация тестовых данных
+      uri:
+        url: http://localhost:8080/put
+        method: POST
+        body_format: json
+        body:
+          key: "{{ item.key }}"
+          value: "{{ item.value }}"
+        status_code: 200
+        timeout: 5
+      loop:
+        - { key: "key1", value: "value1" }
+        - { key: "key2", value: "value2" }
+        - { key: "test_key", value: "test_value" }
+      when: api_check is success
